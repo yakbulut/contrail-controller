@@ -35,10 +35,10 @@ Outputs a set of variables in json, shell, table, or python format
 
   veth
     name of veth interface created
-  
+
   netns
     network namesace veth is in
-    
+
   ip
     IP address of veth interface
   hw
@@ -46,15 +46,15 @@ Outputs a set of variables in json, shell, table, or python format
 
   gateway
     IP address of veth default gateway
-  
+
   dns
     IP address of veth DNS server
-    
+
 
 EXAMPLES
 
 * create a veth port
-  
+
   contrail_veth_port my_instance my_net
 
 * delete the veth port
@@ -65,7 +65,7 @@ EXAMPLES
 
   sudo ip netns exec my_net ssh $my_vm_ip
 
-BUGS  
+BUGS
 
 This assumes there's only one subnet on the network.  If there is more
 than one, this will choose the first subnet and set the namespace's
@@ -74,7 +74,7 @@ default route and DNS from the first subnet.
 --delete doesn't delete the veth interfaces or netns.  We need an
 extension to the vrouter API to retrieve the name of the interface a
 port is bound to.
-  
+
 AUTHOR
 
   Noel Burton-Krahn <noel@pistoncloud.com>
@@ -89,21 +89,21 @@ import netaddr
 import argparse
 
 # KLUDGE - should be in PYTHONPATH
-sys.path.append('/opt/stack/nova/plugins/contrail')
+sys.path.append('/usr/share/contrail')
 
 # api for talking to contrail system-global API server
 from vnc_api import vnc_api
+from contrail_vrouter_api import vrouter_api
 
 # api for talking to local host's contrail vrouter
-import instance_service.ttypes
-from contrail_utils import vrouter_rpc, \
-     uuid_from_string, uuid_array_to_str, \
+import contrail_vrouter_api.gen_py.instance_service as instance_service
+from contrail_utils import \
      new_interface_name, sudo, link_exists_func, ProcessExecutionError, \
      format_dict
 
 class ContrailVethPort(object):
     """Create a veth port connected to a Contrail virtual network"""
-    
+
     def __init__(self, *argv, **args):
         """Set arguments dict.  If args is not a dict, then parse it
         as an array of strings, or sys.argv if None"""
@@ -116,7 +116,7 @@ class ContrailVethPort(object):
             if not argv:
                 argv = None
             self.args = vars(self.argparser().parse_args(argv))
-            
+
         self.vnc_client = None
 
     @classmethod
@@ -161,6 +161,9 @@ class ContrailVethPort(object):
             "net_name", default=None,
             help=("Name of virtual network to attach veth interface to."
                   + "  Will be created if it doesn't already exist"))
+        parser.add_argument(
+            "--gateway",
+            help=("Gateway address"))
         return parser
 
     def vnc_connect(self):
@@ -170,7 +173,7 @@ class ContrailVethPort(object):
                 api_server_host=self.args['api_server'],
                 api_server_port=self.args['api_port'])
         return self.vnc_client
-        
+
     def create(self):
         """Create a vm and vmi, find or create a network, and attach
         the vmi to a new veth interface
@@ -180,19 +183,19 @@ class ContrailVethPort(object):
           vm_name   name of the vm to create
           net_name  name of the netwok to arrach to
           subnet    x.x.x.x/len - optional if network already exists
-          netns     Network namespace where the veth interface is bound to.  Defaults to net_name    
+          netns     Network namespace where the veth interface is bound to.  Defaults to net_name
 
         Returns:
 
           A dict with the following elements:
-          
+
           port_id  uuid of port
           ip
           veth     name of veth interface
           netns    Network namespace where the veth interface is bound to
-          
+
         """
-        
+
         # remember what to clean up if things go wrong
         port_created = False
         veth_created = False
@@ -216,16 +219,15 @@ class ContrailVethPort(object):
                 raise ValueError("netns=[%s] must be a valid namespace name"
                                  + " (a single word)" % netns)
 
-            
+
             vnc_client = self.vnc_connect()
 
             proj_fq_name = self.args['project'].split(':')
 
             # find or create the VM
-            vm_fq_name = proj_fq_name + [ self.args['vm_name'] ]
-
-            # debug
-            #import pdb; pdb.set_trace()
+            # NOTE(noelbk) - API change removed proj_fq_name from fq_name
+            #vm_fq_name = proj_fq_name + [ self.args['vm_name'] ]
+            vm_fq_name = [ self.args['vm_name'] ]
 
             try:
                 vm = vnc_client.virtual_machine_read(fq_name = vm_fq_name)
@@ -235,14 +237,14 @@ class ContrailVethPort(object):
                                      % self.args['vm_name'])
             except vnc_api.NoIdError:
                 # create vm if necessary
-                vm = vnc_api.VirtualMachine(':'.join(vm_fq_name),
-                                            fq_name=vm_fq_name)
+                vm = vnc_api.VirtualMachine(name=vm_fq_name[-1], fq_name=vm_fq_name)
                 vnc_client.virtual_machine_create(vm)
                 vm = vnc_client.virtual_machine_read(fq_name = vm_fq_name)
                 vm_created = True
-                
+
             # find or create the network
             vnet_fq_name = proj_fq_name + [ net_name ]
+            #vnet_fq_name = [ net_name ]
             vnet_created = False
             try:
                 vnet = vnc_client.virtual_network_read(fq_name = vnet_fq_name)
@@ -294,19 +296,20 @@ class ContrailVethPort(object):
 
             # Create the veth port.  Create a veth pair.  Put one end
             # in the VMI port and the other in a network namespace
-            
+
             # get the ip, mac, and gateway from the vmi
             ip_uuid = vmi.get_instance_ip_back_refs()[0]['uuid']
             ip = vnc_client.instance_ip_read(id=ip_uuid).instance_ip_address
             mac = vmi.virtual_machine_interface_mac_addresses.mac_address[0]
             subnet = vnet.network_ipam_refs[0]['attr'].ipam_subnets[0]
-            gw = subnet.default_gateway
+            #gw = subnet.default_gateway
+            gw = self.args['gateway']
             dns = gw # KLUDGE - that's the default, but some networks
                      # have other DNS configurations
             ipnetaddr = netaddr.IPNetwork("%s/%s" %
                                           (subnet.subnet.ip_prefix,
                                            subnet.subnet.ip_prefix_len))
-            
+
             # set up the veth pair with one part for vrouter and one
             # for the netns
 
@@ -317,7 +320,7 @@ class ContrailVethPort(object):
                                               exists_func=link_exists)
             veth_host = new_interface_name(suffix=vnet.uuid, prefix="ve0",
                                            exists_func=link_exists)
-            
+
             sudo("ip link add %s type veth peer name %s",
                  (veth_vrouter, veth_host))
             veth_created = True
@@ -326,7 +329,7 @@ class ContrailVethPort(object):
                 netns_created = True
             except ProcessExecutionError:
                 pass
-            
+
             sudo("ip link set %s netns %s",
                  (veth_host, netns))
             sudo("ip netns exec %s ip link set dev %s address %s",
@@ -348,20 +351,19 @@ class ContrailVethPort(object):
             sudo("tee %s", (resolv_conf,), process_input=resolv_conf_body)
 
             # finally, create the Contrail port
-            port = instance_service.ttypes.Port(
-                uuid_from_string(vmi.uuid),
-                uuid_from_string(vm.uuid), 
-                veth_vrouter,
-                ip,
-                uuid_from_string(vnet.uuid),
-                mac,
-                )
-            rpc = vrouter_rpc()
-            rpc.AddPort([port])
-            port_created = True
-            
+            vrouter_client = vrouter_api.ContrailVRouterApi()
+            #vrouter_client.connect()
+            #port_created = vrouter_client.add_port(vm.uuid, vmi.uuid, veth_vrouter, mac,
+            #                                       ip_address=ip,
+            #                                       vn_id=vnet.uuid)
+
+            port_created = vrouter_client.add_port(vm.uuid, vmi.uuid, veth_vrouter, mac,
+                                                   ip_address=ip,
+                                                   vn_id=vnet.uuid, port_type=1)
+
+
             return(dict(
-                port_id = uuid_array_to_str(port.port_id),
+                port_id=vmi.uuid,
                 vm_id = vm.uuid,
                 net_id = vnet.uuid,
                 vmi_id = vmi.uuid,
@@ -378,7 +380,7 @@ class ContrailVethPort(object):
         except:
             # something went wrong, clean up
             if port_created:
-                rpc.DeletePort(port.port_id)
+                vrouter_client.delete_port(vmi.uuid)
             if veth_created:
                 sudo("ip link delete %s", (veth_vrouter,),
                      check_exit_code=False)
@@ -397,7 +399,7 @@ class ContrailVethPort(object):
     def delete(self):
         """Delete a vm and its vmi."""
         vnc_client = self.vnc_connect()
-        
+
         proj_fq_name = self.args.get('project').split(':')
         vm_fq_name = proj_fq_name + [ self.args.get('vm_name') ]
         try:
@@ -422,7 +424,7 @@ class ContrailVethPort(object):
         # TODO: delete the veth, but there's no way to find the local
         # vrouter port.  The vrouter API has AddPort and DeletePort,
         # but no GetPort
-    
+
     def main(self):
         """run from command line"""
         if self.args.get('delete'):
@@ -433,4 +435,3 @@ class ContrailVethPort(object):
 
 if __name__ == '__main__':
     ContrailVethPort().main()
-

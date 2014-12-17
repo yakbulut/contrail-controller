@@ -13,7 +13,7 @@ import thrift
 import uuid
 import shlex
 
-import instance_service
+import contrail_vrouter_api.gen_py.instance_service.ttypes
 from thrift.protocol import TBinaryProtocol
 from thrift.transport import TTransport
 from nova.utils import execute
