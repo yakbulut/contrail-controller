@@ -98,7 +98,7 @@ from contrail_vrouter_api import vrouter_api
 # api for talking to local host's contrail vrouter
 import contrail_vrouter_api.gen_py.instance_service as instance_service
 from contrail_utils import \
-     new_interface_name, sudo, link_exists_func, ProcessExecutionError, \
+     new_interface_name, link_exists_func, execute, ProcessExecutionError, \
      format_dict
 
 class ContrailVethPort(object):
@@ -321,46 +321,40 @@ class ContrailVethPort(object):
             veth_host = new_interface_name(suffix=vnet.uuid, prefix="ve0",
                                            exists_func=link_exists)
 
-            sudo("ip link add %s type veth peer name %s",
+            execute("ip link add %s type veth peer name %s",
                  (veth_vrouter, veth_host))
             veth_created = True
             try:
-                sudo("ip netns add %s", (netns,))
+                execute("ip netns add %s", (netns,))
                 netns_created = True
             except ProcessExecutionError:
                 pass
 
-            sudo("ip link set %s netns %s",
+            execute("ip link set %s netns %s",
                  (veth_host, netns))
-            sudo("ip netns exec %s ip link set dev %s address %s",
+            execute("ip netns exec %s ip link set dev %s address %s",
                  (netns, veth_host, mac))
-            sudo("ip netns exec %s ip address add %s broadcast %s dev %s",
+            execute("ip netns exec %s ip address add %s broadcast %s dev %s",
                  (netns,
                   ("%s/%s" % (ip, subnet.subnet.ip_prefix_len)),
                   ipnetaddr.broadcast, veth_host))
-            sudo("ip netns exec %s ip link set dev %s up",
+            execute("ip netns exec %s ip link set dev %s up",
                  (netns, veth_host))
-            sudo("ip netns exec %s route add default gw %s dev %s",
+            execute("ip netns exec %s route add default gw %s dev %s",
                  (netns, gw, veth_host))
-            sudo("ip link set dev %s up", (veth_vrouter,))
+            execute("ip link set dev %s up", (veth_vrouter,))
 
             # make a namespace-specific resolv.conf
             resolv_conf = "/etc/netns/%s/resolv.conf" % netns
             resolv_conf_body = "nameserver %s\n" % dns
-            sudo("mkdir -p %s", (os.path.dirname(resolv_conf),))
-            sudo("tee %s", (resolv_conf,), process_input=resolv_conf_body)
+            execute("mkdir -p %s", (os.path.dirname(resolv_conf),))
+            execute("tee %s", (resolv_conf,), process_input=resolv_conf_body)
 
             # finally, create the Contrail port
             vrouter_client = vrouter_api.ContrailVRouterApi()
-            #vrouter_client.connect()
-            #port_created = vrouter_client.add_port(vm.uuid, vmi.uuid, veth_vrouter, mac,
-            #                                       ip_address=ip,
-            #                                       vn_id=vnet.uuid)
-
             port_created = vrouter_client.add_port(vm.uuid, vmi.uuid, veth_vrouter, mac,
                                                    ip_address=ip,
                                                    vn_id=vnet.uuid, port_type=1)
-
 
             return(dict(
                 port_id=vmi.uuid,
@@ -382,10 +376,10 @@ class ContrailVethPort(object):
             if port_created:
                 vrouter_client.delete_port(vmi.uuid)
             if veth_created:
-                sudo("ip link delete %s", (veth_vrouter,),
+                execute("ip link delete %s", (veth_vrouter,),
                      check_exit_code=False)
             if netns_created:
-                sudo("ip netns delete %s", (netns,), check_exit_code=False)
+                execute("ip netns delete %s", (netns,), check_exit_code=False)
             if ip_created:
                 vnc_client.instance_ip_delete(id=ip_created)
             if vmi_created:

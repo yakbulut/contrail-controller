@@ -1,4 +1,4 @@
-#!/usr/bin/python 
+#!/usr/bin/python
 """
 Common utility functions for Contrail scripts
 
@@ -8,16 +8,32 @@ Noel Burton-Krahn <noel@pistoncloud.com>
 """
 
 import sys
-
-import thrift
-import uuid
 import shlex
+from subprocess import CalledProcessError as ProcessExecutionError
+import subprocess
 
-import contrail_vrouter_api.gen_py.instance_service.ttypes
-from thrift.protocol import TBinaryProtocol
-from thrift.transport import TTransport
-from nova.utils import execute
-from nova.openstack.common.processutils import ProcessExecutionError
+def execute(str, args=None, check_exit_code=True, process_input=None):
+    """shortcut to subprocess.communicate.  raises ProcessExecutionError
+    unless check_exit_code=False. Breaks str into array using shlex and
+    allows %-substitutions for args
+    """
+    i=0
+    cmd = []
+    for s in shlex.split(str):
+        if s[0] == "%":
+            s = s % (args[i],)
+            i += 1
+        cmd.append(s)
+    proc = subprocess.Popen(cmd,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STOUT)
+    (stdoutdata, stderrdata) = proc.communicate(process_input)
+    output = stdoutdata
+    if check_exit_code and proc.returncode != 0:
+        raise ProcessExecutionError(returncode=proc.returncode, cmd=cmd,
+                                    output=output)
+    return output
 
 def format_dict(dict, style='table'):
     """stringify dict as json, shell, table (ascii), or python"""
@@ -36,57 +52,18 @@ def format_dict(dict, style='table'):
     elif style == 'shell':
         from StringIO import StringIO
         import pipes
-        
+
         s = StringIO()
         for (k,v) in sorted(dict.items()):
             s.write("%s=%s\n" % (k, pipes.quote(v)))
         return s.getvalue()
-    
+
     elif style == 'python':
         import pprint
         pprint.pprint(dict)
 
     else:
         raise ValueError("unknown format: %s.  Expected table, shell, json, or python")
-
-def sudo(str, args=None, **opts):
-    """shortcut to nova.utils.execute.
-    Breaks str into array using shlex and allows %-substitutions for args
-    """
-    
-    # run as root by default
-    if 'run_as_root' not in opts:
-        opts['run_as_root']=True
-    i=0
-    l = []
-    for s in shlex.split(str):
-        if s[0] in "%\\":
-            s = s % (args[i],)
-            i += 1
-        l.append(s)
-    execute(*l, **opts)
-
-def vrouter_rpc():
-    """Return an RPC client connection to the local vrouter service"""
-    import thrift.transport.TSocket as TSocket
-    socket = TSocket.TSocket('127.0.0.1', 9090)
-    transport = TTransport.TFramedTransport(socket)
-    transport.open()
-    protocol = TBinaryProtocol.TBinaryProtocol(transport)
-    import instance_service.InstanceService as InstanceService
-    return InstanceService.Client(protocol)
-
-def uuid_array_to_str(array):
-    """convert an array of integers into a UUID string"""
-    hexstr = ''.join([ '%02x' % x for x in array ])
-    return str(uuid.UUID(hexstr))
-
-def uuid_from_string(idstr):
-    """Convert an uuid into an array of integers"""
-    if not idstr:
-        return None
-    hexstr = uuid.UUID(idstr).hex
-    return [int(hexstr[i:i+2], 16) for i in range(32) if i % 2 == 0]
 
 class AllocationError(Exception):
     pass
@@ -113,7 +90,7 @@ def link_exists_func(*netns_list):
                 if netns:
                     cmd = 'ip netns exec %s '
                     args = [netns]
-                sudo(cmd + 'ip link show %s', args + [veth])
+                execute(cmd + 'ip link show %s', args + [veth])
                 return True
             except ProcessExecutionError:
                 pass
@@ -131,13 +108,13 @@ def new_interface_name(suffix='', prefix='tap', maxlen=15, max_retries=100, exis
     # default: look only in the default namespace
     if not exists_func:
         exists_func = link_exists_func()
-        
+
     suflen = maxlen - len(prefix)
     sufmax = int('f' * suflen, 16)
     def rand_suf():
         return ('%x' % random.randint(1, sufmax)).zfill(suflen)
 
-    # try the user-supplied suffix to start, but fall back to  
+    # try the user-supplied suffix to start, but fall back to
     suffix = suffix[-suflen:]
     if len(suffix) == 0:
         suffix = rand_suf()
